@@ -136,7 +136,7 @@ async fn main() {
     // Configurations
     let triton_url = "http://localhost:8000/v2";
     let model_name = "densenet_onnx";
-    let model_path = PathBuf::from("/home/ronnie/Model");
+    let model_path = PathBuf::from("/home/ronnie/open-inference-runtime/extract");
 
     // Create Triton client
     let client = match TritonClient::new(triton_url, model_name, model_path.clone()).await {
