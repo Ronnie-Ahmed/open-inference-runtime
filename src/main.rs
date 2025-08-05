@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::error::Error;
 use tokio;
 mod client;
+mod websocket_server;
+pub use websocket_server::start_ws_server;
 use client::*;
 mod models;
 use models::*;
@@ -146,6 +148,7 @@ async fn main() {
             return;
         }
     };
+    start_ws_server(client.clone().into()).await;
 
     // Create test input data
     let mut input_data: HashMap<String, TensorData> = HashMap::new();

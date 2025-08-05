@@ -7,8 +7,13 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::File;
+use crate::websocket_server::start_ws_server;
 use std::io::{self, Read};
 use std::path::PathBuf;
+use warp::Filter;
+use futures::{SinkExt};
+use warp::ws::Message;
+use std::sync::Arc;
 
 // const TRITON_URL: &str = "http://localhost:8000/v2";
 
@@ -16,6 +21,7 @@ use std::path::PathBuf;
 
 // const BASE_PATH: &str = "/home/ronnie/Model";
 
+#[derive(Debug,Clone)]
 pub struct TritonClient {
     client: Client,
     url: String,
@@ -59,6 +65,7 @@ impl TritonClient {
             model_name: model_name.to_string(),
             model_path: model_path.clone(),
         };
+        // start_ws_server(client.clone().into()).await;
 
         match ModelExtractor::new(&client.model_name, model_path.clone()) {
             Ok(extractor) => {
@@ -107,6 +114,8 @@ impl TritonClient {
 
         Ok(client)
     }
+
+    
 
     // Check if the server is live
     // pub async fn is_server_live(&self) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
@@ -161,30 +170,30 @@ impl TritonClient {
     //     }
     // }
 
-    pub fn verify_model_blob(&self, expected_hash_hex: &str) -> io::Result<()> {
-        let extracted_path = self.model_path.join(&self.model_name);
-        let model_path = extracted_path.join("1").join("model.onnx");
+    // pub fn verify_model_blob(&self, expected_hash_hex: &str) -> io::Result<()> {
+    //     let extracted_path = self.model_path.join(&self.model_name);
+    //     let model_path = extracted_path.join("1").join("model.onnx");
 
-        // Read model file into bytes
-        let mut model_file = File::open(model_path)?;
-        let mut model_data = Vec::new();
-        model_file.read_to_end(&mut model_data)?;
+    //     // Read model file into bytes
+    //     let mut model_file = File::open(model_path)?;
+    //     let mut model_data = Vec::new();
+    //     model_file.read_to_end(&mut model_data)?;
 
-        // Compute actual SHA-256 of model
-        let model_sha256 = Sha256::digest(&model_data);
-        let computed_hash_hex = hex::encode(&model_sha256);
+    //     // Compute actual SHA-256 of model
+    //     let model_sha256 = Sha256::digest(&model_data);
+    //     let computed_hash_hex = hex::encode(&model_sha256);
 
-        // Compare with provided hash
-        if computed_hash_hex == expected_hash_hex.to_lowercase() {
-            println!("✅ Hash verification passed");
-            Ok(())
-        } else {
-            eprintln!("❌ Hash mismatch:");
-            eprintln!("  Computed : {}", computed_hash_hex);
-            eprintln!("  Expected : {}", expected_hash_hex.to_lowercase());
-            std::process::exit(1);
-        }
-    }
+    //     // Compare with provided hash
+    //     if computed_hash_hex == expected_hash_hex.to_lowercase() {
+    //         println!("✅ Hash verification passed");
+    //         Ok(())
+    //     } else {
+    //         eprintln!("❌ Hash mismatch:");
+    //         eprintln!("  Computed : {}", computed_hash_hex);
+    //         eprintln!("  Expected : {}", expected_hash_hex.to_lowercase());
+    //         std::process::exit(1);
+    //     }
+    // }
 
     // Unload a model from Triton
     pub async fn unload_model(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -221,6 +230,7 @@ impl TritonClient {
 
         if response.status().is_success() {
             let metadata: Value = response.json().await?;
+            // println!("{:#?}",metadata);
             Ok(metadata)
         } else {
             println!(
@@ -240,10 +250,11 @@ impl TritonClient {
         inputs: HashMap<String, TensorData>,
     ) -> Result<HashMap<String, (TensorData, Vec<usize>)>, Box<dyn std::error::Error + Send + Sync>>
     {
-        // Fetch model metadata
+        // Fetch model metadata{:#?}
         let metadata_url = format!("{}/models/{}", self.url, self.model_name);
         let metadata_response = self.client.get(&metadata_url).send().await?;
-
+        
+        // println!("{:#?}",metadata_response);
         if !metadata_response.status().is_success() {
             let error_message = metadata_response.text().await.unwrap_or_default();
             return Err(
