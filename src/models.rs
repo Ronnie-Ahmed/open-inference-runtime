@@ -1,9 +1,7 @@
-use base64::{engine::general_purpose, Engine as _};
 use flate2::read::GzDecoder;
-use sha2::{Digest, Sha256};
 use std::fs::{remove_file, File};
-use std::io::{self, copy, BufReader, Read, Write};
-use std::path::{Path, PathBuf};
+use std::io::{self, copy, BufReader};
+use std::path::{ PathBuf};
 use tar::Archive;
 use zip::ZipArchive;
 

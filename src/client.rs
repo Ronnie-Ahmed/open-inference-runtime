@@ -1,23 +1,20 @@
 use crate::models::ModelExtractor;
 use futures::{stream::StreamExt, Future, Stream};
-use serde::de::Error as DeError;
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self};
 use std::path::PathBuf;
-use std::pin::Pin;
 
 #[derive(Clone, Debug)]
 pub struct TritonClient {
     client: Client,
     url: String,
     model_path: PathBuf,
+    model_name: String, // ✅ now part of the struct
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -44,36 +41,52 @@ impl TensorData {
 }
 
 impl TritonClient {
-    pub async fn new(
-        triton_url: &str,
-        model_path: PathBuf,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let client = TritonClient {
-            client: Client::new(),
-            url: triton_url.to_string(),
-            model_path,
-        };
+   pub async fn new(
+    triton_url: &str,
+    model_path: PathBuf,
+) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    let client = Client::new();
 
-        println!("⏳ Checking if the server is live...");
-        let url = format!("{}/health/live", &client.url);
-        let response = client.client.get(&url).send().await?;
-        if !response.status().is_success() {
-            println!("Server is not live: {}", response.status());
-        } else {
-            println!("Server is live!");
-        }
-
-        println!("⏳ Checking if the server is ready...");
-        let url = format!("{}/health/ready", &client.url);
-        let response = client.client.get(&url).send().await?;
-        if !response.status().is_success() {
-            println!("Server is not ready: {}", response.status());
-        } else {
-            println!("Server is ready!");
-        }
-
-        Ok(client)
+    println!("⏳ Checking if the server is live...");
+    let live_url = format!("{}/health/live", triton_url);
+    let response = client.get(&live_url).send().await?;
+    if !response.status().is_success() {
+        println!("Server is not live: {}", response.status());
+    } else {
+        println!("Server is live!");
     }
+
+    println!("⏳ Checking if the server is ready...");
+    let ready_url = format!("{}/health/ready", triton_url);
+    let response = client.get(&ready_url).send().await?;
+    if !response.status().is_success() {
+        println!("Server is not ready: {}", response.status());
+    } else {
+        println!("Server is ready!");
+    }
+
+    println!("⏳ Fetching model list...");
+    let repo_url = format!("{}/repository/index", triton_url);
+    let repo_resp = client.post(&repo_url).send().await?;
+    let models: Vec<serde_json::Value> = repo_resp.json().await?;
+
+    let model_name = models
+        .get(0)
+        .and_then(|m| m.get("name"))
+        .and_then(|v| v.as_str())
+        .ok_or("No model found in repository")?
+        .to_string();
+
+    println!("✅ Detected model: {}", model_name);
+
+    Ok(Self {
+        client,
+        url: triton_url.to_string(),
+        model_path,
+        model_name, // store internally
+    })
+}
+
 
     // Check if the server is live
     pub async fn is_server_live(&self) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
@@ -98,74 +111,48 @@ impl TritonClient {
             Err(format!("Server is not live. HTTP Status: {:?}", response.status()).into())
         }
     }
-
+    // Load the model 
     pub async fn load_model(
-        &self,
-        model_name: &str,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        match ModelExtractor::new(model_name, self.model_path.clone()) {
-            Ok(extractor) => {
-                extractor.extract_model()?;
-            }
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                println!("✅ Model '{}' already extracted, continuing.", model_name);
-            }
-            Err(e) => {
-                return Err(Box::new(e));
-            }
-        }
-
-        let url = format!("{}/repository/models/{}/load", self.url, model_name);
-        let response = self.client.post(&url).json(&json!({})).send().await?;
-
-        if response.status().is_success() {
-            println!("✅ Model '{}' loaded successfully.", model_name);
-            Ok(())
-        } else {
-            Err(format!(
-                "Failed to load model '{}'. HTTP: {:?}",
-                model_name,
-                response.status()
-            )
-            .into())
-        }
-    }
-
-    // Unload a model from Triton
-    pub async fn unload_model(
     &self,
-    model_name: &str,
-) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    // 1. Check if model is loaded
-    let status_url = format!("{}/models/{}", self.url, model_name);
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let status_url = format!("{}/models/{}", self.url, self.model_name);
     let status_response = self.client.get(&status_url).send().await?;
 
-    if status_response.status() == reqwest::StatusCode::NOT_FOUND {
-        println!("⚠️ Model '{}' is not loaded on Triton.", model_name);
-        return Ok(false);  // no unload needed
-    } else if !status_response.status().is_success() {
+    if status_response.status() == reqwest::StatusCode::OK {
+        println!("Model '{}' is already loaded on Triton.", self.model_name);
+        return Ok(());
+    } else if status_response.status() != reqwest::StatusCode::NOT_FOUND {
         return Err(format!(
             "Failed to check model status '{}'. HTTP: {:?}",
-            model_name,
+            self.model_name,
             status_response.status()
-        ).into());
+        )
+        .into());
     }
 
-    // 2. Unload model
-    let url = format!("{}/repository/models/{}/unload", self.url, model_name);
+    match ModelExtractor::new(&self.model_name, self.model_path.clone()) {
+        Ok(extractor) => {
+            extractor.extract_model()?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            println!("✅ Model '{}' already extracted, continuing.", self.model_name);
+        }
+        Err(e) => {
+            return Err(Box::new(e));
+        }
+    }
+
+    // 3. Load the model
+    let url = format!("{}/repository/models/{}/load", self.url, self.model_name);
     let response = self.client.post(&url).json(&json!({})).send().await?;
 
     if response.status().is_success() {
-        let text = response.text().await.unwrap_or_default();
-        if text.to_lowercase().contains("error") {
-            return Err(format!("Unload failed with message: {}", text).into());
-        }
-        println!("✅ Model '{}' unloaded successfully.", model_name);
-        Ok(true)
+        println!("✅ Model '{}' loaded successfully.", self.model_name);
+        Ok(())
     } else {
         Err(format!(
-            "Failed to unload model '{}'. HTTP: {:?}",
-            model_name,
+            "Failed to load model '{}'. HTTP: {:?}",
+            self.model_name,
             response.status()
         )
         .into())
@@ -173,7 +160,46 @@ impl TritonClient {
 }
 
 
+    // Unload a model from Triton
+    pub async fn unload_model(
+    &self,
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    let status_url = format!("{}/models/{}", self.url, self.model_name);
+    let status_response = self.client.get(&status_url).send().await?;
 
+    if status_response.status() == reqwest::StatusCode::NOT_FOUND {
+        println!("⚠️ Model '{}' is not loaded on Triton.", self.model_name);
+        return Ok(false);  
+    } else if !status_response.status().is_success() {
+        return Err(format!(
+            "Failed to check model status '{}'. HTTP: {:?}",
+            self.model_name,
+            status_response.status()
+        ).into());
+    }
+
+    let url = format!("{}/repository/models/{}/unload", self.url, self.model_name);
+    let response = self.client.post(&url).json(&json!({})).send().await?;
+
+    if response.status().is_success() {
+        let text = response.text().await.unwrap_or_default();
+        if text.to_lowercase().contains("error") {
+            return Err(format!("Unload failed with message: {}", text).into());
+        }
+        println!("✅ Model '{}' unloaded successfully.", self.model_name);
+        Ok(true)
+    } else {
+        Err(format!(
+            "Failed to unload model '{}'. HTTP: {:?}",
+            self.model_name,
+            response.status()
+        )
+        .into())
+    }
+}
+
+
+    // Fetch the list of availabe models in repository
     pub async fn list_models(
         &self,
     ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
@@ -196,24 +222,23 @@ impl TritonClient {
     /// Fetches the metadata of a model from Triton Inference Server
     pub async fn get_model_metadata(
         &self,
-        model_name: &str,
     ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
-        self.load_model(model_name)
+        self.load_model()
             .await
             .map_err(|e| format!("Failed to load model: {}", e))?;
 
-        match ModelExtractor::new(model_name, self.model_path.clone()) {
+        match ModelExtractor::new(&self.model_name, self.model_path.clone()) {
             Ok(extractor) => {
                 extractor.extract_model()?;
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                println!("✅ Model '{}' already extracted, continuing.", model_name);
+                println!("✅ Model '{}' already extracted, continuing.", self.model_name);
             }
             Err(e) => {
                 return Err(Box::new(e));
             }
         }
-        let url = format!("{}/models/{}", self.url, model_name);
+        let url = format!("{}/models/{}", self.url, self.model_name);
 
         let response = self.client.get(&url).send().await?;
 
@@ -224,7 +249,7 @@ impl TritonClient {
             println!("Failed to fetch metadata. Status: {:?}", response.status());
             Err(format!(
                 "Failed to fetch metadata for model '{}'. HTTP Status: {:?}",
-                model_name,
+                self.model_name,
                 response.status()
             )
             .into())
@@ -233,24 +258,24 @@ impl TritonClient {
 
     pub async fn get_model_stats(
         &self,
-        model_name: &str,
+        
     ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
-        self.load_model(model_name)
+        self.load_model()
             .await
             .map_err(|e| format!("Failed to load model: {}", e))?;
 
-        match ModelExtractor::new(model_name, self.model_path.clone()) {
+        match ModelExtractor::new(&self.model_name, self.model_path.clone()) {
             Ok(extractor) => {
                 extractor.extract_model()?;
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                println!("✅ Model '{}' already extracted, continuing.", model_name);
+                println!("✅ Model '{}' already extracted, continuing.", self.model_name);
             }
             Err(e) => {
                 return Err(Box::new(e));
             }
         }
-        let url = format!("{}/models/{}/stats", self.url, model_name);
+        let url = format!("{}/models/{}/stats", self.url, self.model_name);
         let response = Client::new().get(&url).send().await?;
         let json: Value = response.json().await?;
         Ok(json)
@@ -258,9 +283,8 @@ impl TritonClient {
 
     pub async fn generate_inputs(
     &self,
-    model_name: &str,
 ) -> Result<HashMap<String, (TensorData, Vec<usize>)>, Box<dyn std::error::Error + Send + Sync>> {
-    let metadata = self.get_model_metadata(model_name).await?;
+    let metadata = self.get_model_metadata().await?;
     let model_inputs = metadata["inputs"]
         .as_array()
         .ok_or("Invalid model metadata format: 'inputs' not found")?;
@@ -280,7 +304,6 @@ impl TritonClient {
             .map(|v| {
                 if let Some(signed) = v.as_i64() {
                     if signed < 0 {
-                        // Replace dynamic dimension with 1 for dummy inputs
                         Ok(1usize)
                     } else {
                         Ok(signed as usize)
@@ -314,7 +337,6 @@ impl TritonClient {
 
     pub async fn infer(
         &self,
-        model_name: &str,
         input_data: HashMap<&str, (TensorData, Vec<usize>)>,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
         let model_inputs: Vec<_> = input_data
@@ -339,7 +361,7 @@ impl TritonClient {
 
         let request_body = serde_json::json!({ "inputs": model_inputs });
 
-        let url = format!("{}/models/{}/infer", self.url, model_name);
+        let url = format!("{}/models/{}/infer", self.url, self.model_name);
         let response = self.client.post(&url).json(&request_body).send().await?;
 
         if response.status().is_success() {
@@ -365,120 +387,106 @@ impl TritonClient {
         CFut: Future<Output = ()> + Send + 'static,
     {
         while let Some(request) = request_stream.next().await {
-        let (command, model_name_opt, inputs_opt) = if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&request) {
-        let cmd = map.get("command").and_then(|v| v.as_str()).unwrap_or("infer").to_string();
-        let model_name = map.get("model_name").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let inputs = map.get("inputs").cloned(); // Option<Value>
-        (cmd, model_name, inputs)
-    } else {
-        let parts: Vec<&str> = request.trim().split_whitespace().collect();
-        let cmd = parts.get(0).unwrap_or(&"").to_string();
-        let model_name = parts.get(1).map(|s| s.to_string());
-        (cmd, model_name, None)
-    };
+        let (command, inputs_opt) = if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&request) {
+            let cmd = map
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("infer")
+                .to_string();
+            let inputs = map.get("inputs").cloned(); 
+            (cmd, inputs)
+        } else {
+            let parts: Vec<&str> = request.trim().split_whitespace().collect();
+            let cmd = parts.get(0).unwrap_or(&"").to_string();
+            (cmd, None)
+        };
 
-            let response_json = match command.as_str() {
-               "infer" => {
-                        match model_name_opt {
-                            Some(ref model_name) => {
-                                let inputs = if let Some(inputs_val) = inputs_opt {
-                                    match serde_json::from_value::<HashMap<String, (TensorData, Vec<usize>)>>(inputs_val) {
-                                        Ok(user_inputs) => user_inputs,
-                                        Err(e) => {
-                                            println!("⚠️ Failed to parse user inputs: {}", e);
-                                            match self.generate_inputs(model_name).await {
-                                                Ok(dummy) => dummy,
-                                                Err(e) => {
-                                                    println!("{}", json!({ "error": format!("Failed to generate inputs: {}", e) }));
-                                                    return Ok(()); 
-                                                }
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    
-                                    match self.generate_inputs(model_name).await {
-                                        Ok(dummy) => dummy,
-                                        Err(e) => {
-                                            println!("{}", json!({ "error": format!("Failed to generate inputs: {}", e) }));
-                                            return Ok(()); 
-                                        }
-                                    }
-                                };
-
-                                match self.run_inference(model_name, inputs).await {
-                                    Ok(output) => {
-                                        println!("🧠 Inference Output:\n{}", serde_json::to_string_pretty(&output)?);
-                                        output
-                                    }
-                                    Err(e) => json!({ "error": format!("Inference error: {}", e) }),
+           let response_json = match command.as_str() {
+            "infer" => {
+                let inputs = if let Some(inputs_val) = inputs_opt {
+                    match serde_json::from_value::<HashMap<String, (TensorData, Vec<usize>)>>(inputs_val) {
+                        Ok(user_inputs) => user_inputs,
+                        Err(e) => {
+                            println!("⚠️ Failed to parse user inputs: {}", e);
+                            match self.generate_inputs().await {
+                                Ok(dummy) => dummy,
+                                Err(e) => {
+                                    println!("{}", json!({ "error": format!("Failed to generate inputs: {}", e) }));
+                                    return Ok(()); 
                                 }
                             }
-                            None => json!({ "error": "'model_name' is required for inference." }),
                         }
                     }
-
-                "metadata" => match model_name_opt {
-                    Some(model_name) => match self.get_model_metadata(&model_name).await {
-                        Ok(meta) => meta,
-                        Err(e) => json!({ "error": format!("Failed to get metadata: {}", e) }),
-                    },
-                    None => json!({ "error": "'model_name' is required for metadata command." }),
-                },
-
-                "load" => match model_name_opt {
-                    Some(model_name) => match self.load_model(&model_name).await {
-                        Ok(_) => json!({ "load": "Success" }),
-                        Err(e) => json!({ "error": format!("Failed to load model: {}", e) }),
-                    },
-                    None => json!({ "error": "'model_name' is required for load command." }),
-                },
-                "stats" => match model_name_opt {
-                    Some(model_name) => match self.get_model_stats(&model_name).await {
-                        Ok(status) => status,
-                        Err(e) => json!({ "error": format!("Failed to get status: {}", e) }),
-                    },
-                    None => json!({ "error": "'model_name' is required for status command." }),
-                },
-                "unload" => match model_name_opt {
-                    Some(model_name) => match self.unload_model(&model_name).await {
-                        Ok(unloaded) => {
-                            if unloaded {
-                                json!({ "unload": "Success" })
-                            } else {
-                                json!({ "unload": "Model was not loaded" })
-                            }
+                } else {
+                    match self.generate_inputs().await {
+                        Ok(dummy) => dummy,
+                        Err(e) => {
+                            println!("{}", json!({ "error": format!("Failed to generate inputs: {}", e) }));
+                            return Ok(()); 
                         }
-                        Err(e) => json!({ "error": format!("Failed to unload model: {}", e) }),
-                    },
-                    None => json!({ "error": "'model_name' is required for unload command." }),
-                },
+                    }
+                };
 
-                "ping" => json!({ "response": "pong" }),
-
-                "live" => match self.is_server_live().await {
-                    Ok(true) => json!({ "live": true }),
-                    Ok(false) => json!({ "live": false }),
-                    Err(e) => json!({ "error": format!("Live check failed: {}", e) }),
-                },
-
-                "ready" => match self.is_server_ready().await {
-                    Ok(true) => json!({ "ready": true }),
-                    Ok(false) => json!({ "ready": false }),
-                    Err(e) => json!({ "error": format!("Ready check failed: {}", e) }),
-                },
-                "list" => match self.list_models().await {
-                    Ok(models) => json!({ "models": models }),
-                    Err(e) => json!({ "error": format!("Failed to list models: {}", e) }),
-                },
-
-                _ => {
-                    let help_msg = get_help_message();
-                    let formatted_msg =
-                        format!("❓ Unknown command: '{}'\n\n{}", command, help_msg);
-                    json!({ "message": formatted_msg })
+                match self.run_inference(inputs).await {
+                    Ok(output) => {
+                        println!("🧠 Inference Output:\n{}", serde_json::to_string_pretty(&output)?);
+                        output
+                    }
+                    Err(e) => json!({ "error": format!("Inference error: {}", e) }),
                 }
-            };
+            }
+
+            "metadata" => match self.get_model_metadata().await {
+                Ok(meta) => meta,
+                Err(e) => json!({ "error": format!("Failed to get metadata: {}", e) }),
+            },
+
+            "load" => match self.load_model().await {
+                Ok(_) => json!({ "load": "Success" }),
+                Err(e) => json!({ "error": format!("Failed to load model: {}", e) }),
+            },
+
+            "stats" => match self.get_model_stats().await {
+                Ok(status) => status,
+                Err(e) => json!({ "error": format!("Failed to get status: {}", e) }),
+            },
+
+            "unload" => match self.unload_model().await {
+                Ok(unloaded) => {
+                    if unloaded {
+                        json!({ "unload": "Success" })
+                    } else {
+                        json!({ "unload": "Model was not loaded" })
+                    }
+                }
+                Err(e) => json!({ "error": format!("Failed to unload model: {}", e) }),
+            },
+
+            "ping" => json!({ "response": "pong" }),
+
+            "live" => match self.is_server_live().await {
+                Ok(true) => json!({ "live": true }),
+                Ok(false) => json!({ "live": false }),
+                Err(e) => json!({ "error": format!("Live check failed: {}", e) }),
+            },
+
+            "ready" => match self.is_server_ready().await {
+                Ok(true) => json!({ "ready": true }),
+                Ok(false) => json!({ "ready": false }),
+                Err(e) => json!({ "error": format!("Ready check failed: {}", e) }),
+            },
+
+            "list" => match self.list_models().await {
+                Ok(models) => json!({ "models": models }),
+                Err(e) => json!({ "error": format!("Failed to list models: {}", e) }),
+            },
+
+            _ => {
+                let help_msg = get_help_message();
+                let formatted_msg = format!("❓ Unknown command: '{}'\n\n{}", command, help_msg);
+                json!({ "message": formatted_msg })
+            }
+        };
             if let Some(msg) = response_json.get("message").and_then(|v| v.as_str()) {
                 println!("{msg}");
             } else {
@@ -491,77 +499,24 @@ impl TritonClient {
         Ok(())
     }
 
-//     pub async fn generate_inputs(
-//     &self,
-//     model_name: &str,
-// ) -> Result<HashMap<String, (TensorData, Vec<usize>)>, Box<dyn std::error::Error + Send + Sync>> {
-//     // You can just reuse the dummy generation logic
-//     self.generate_inputs(model_name).await
-// }
-
-
-//     pub async fn generate_inputs(
-//     &self,
-//     model_name: &str,
-// ) -> Result<HashMap<String, (TensorData, Vec<usize>)>, Box<dyn std::error::Error + Send + Sync>> {
-//     // Fetch model metadata from Triton
-//     let metadata = self.get_model_metadata(model_name).await?;
-
-//     let mut inputs_map = HashMap::new();
-
-//     for input in metadata.inputs {
-//         let total_elements: usize = input.shape.iter().map(|d| *d as usize).product();
-
-//         // Generate dummy data based on datatype
-//         let tensor_data = match input.datatype.as_str() {
-//             "FP32" => {
-//                 let data: Vec<f32> = (0..total_elements).map(|i| i as f32).collect();
-//                 TensorData::Fp32(data)
-//             }
-//             "INT32" => {
-//                 let data: Vec<i32> = (0..total_elements).map(|i| i as i32).collect();
-//                 TensorData::Int32(data)
-//             }
-//             "INT64" => {
-//                 let data: Vec<i64> = (0..total_elements).map(|i| i as i64).collect();
-//                 TensorData::Int64(data)
-//             }
-//             "BOOL" => {
-//                 let data: Vec<bool> = (0..total_elements).map(|i| i % 2 == 0).collect();
-//                 TensorData::Bool(data)
-//             }
-//             other => {
-//                 return Err(format!("Unsupported datatype: {}", other).into());
-//             }
-//         };
-
-//         inputs_map.insert(input.name.clone(), (tensor_data, input.shape.clone()));
-//     }
-
-//     Ok(inputs_map)
-// }
-
 
     pub async fn run_inference(
         &self,
-        model_name: &str,
         inputs: HashMap<String, (TensorData, Vec<usize>)>,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
-        println!("⏳ Loading model: {}", model_name);
-        self.load_model(model_name)
+        println!("⏳ Loading model: {}", self.model_name);
+        self.load_model()
             .await
             .map_err(|e| format!("Failed to load model: {}", e))?;
 
-        // Convert aligned inputs into &str keys and (TensorData, shape) values
         let aligned_refs: HashMap<&str, (TensorData, Vec<usize>)> = inputs
             .iter()
             .map(|(k, v)| (k.as_str(), v.clone()))
             .collect();
 
-        // Run inference
-        match self.infer(model_name, aligned_refs).await {
+        match self.infer(aligned_refs).await {
             Ok(result) => {
-                self.unload_model(model_name).await?;
+                self.unload_model().await?;
                 Ok(result)
             }
             Err(e) => Err(format!("Inference failed: {:?}", e).into()),

@@ -1,19 +1,19 @@
-use std::collections::HashMap;
-use std::error::Error;
+// use std::collections::HashMap;
+// use std::error::Error;
 use tokio;
 mod client;
 mod websocket_server;
 use client::*;
 // pub use websocket_server::start_ws_server;
 mod models;
-use futures::Future;
-use models::*;
-use reqwest::Client;
-use serde_json::{json, Value};
+// use futures::Future;
+// use models::*;
+// use reqwest::Client;
+// use serde_json::{json, Value};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use tokio_stream::{self as stream};
+// use tokio_stream::{self as stream};
 // use tokio_tungstenite::tungstenite::Message;
 use futures::SinkExt;
 use futures::StreamExt;
@@ -24,7 +24,7 @@ use warp::Filter;
 async fn main() {
     // Configurations
      let triton_url = "http://localhost:8000/v2";
-    let model_name = "densenet_onnx";
+    // let model_name = "densenet_onnx";
     let model_path = PathBuf::from("/home/ronnie/open-inference-runtime/extract");
 
     // Create Triton client
