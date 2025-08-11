@@ -16,6 +16,7 @@ image = "0.24"
 csv = "1.1"
 base64 = "0.21"
 hex = "0.4"
+axum = "0.8.4"
 prost = "0.12"
 prost-types = "0.12"
 sha2 = "0.10"         # SHA-256, SHA-512, etc.
