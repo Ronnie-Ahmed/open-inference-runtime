@@ -228,17 +228,7 @@ impl TritonClient {
             .await
             .map_err(|e| format!("Failed to load model: {}", e))?;
 
-        match ModelExtractor::new(&self.model_name, self.model_path.clone()) {
-            Ok(extractor) => {
-                extractor.extract_model()?;
-            }
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                println!("✅ Model '{}' already extracted, continuing.", self.model_name);
-            }
-            Err(e) => {
-                return Err(Box::new(e));
-            }
-        }
+  
         let url = format!("{}/models/{}", self.url, self.model_name);
 
         let response = self.client.get(&url).send().await?;
@@ -264,18 +254,6 @@ impl TritonClient {
         self.load_model()
             .await
             .map_err(|e| format!("Failed to load model: {}", e))?;
-
-        match ModelExtractor::new(&self.model_name, self.model_path.clone()) {
-            Ok(extractor) => {
-                extractor.extract_model()?;
-            }
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                println!("✅ Model '{}' already extracted, continuing.", self.model_name);
-            }
-            Err(e) => {
-                return Err(Box::new(e));
-            }
-        }
         let url = format!("{}/models/{}/stats", self.url, self.model_name);
         let response = Client::new().get(&url).send().await?;
         let json: Value = response.json().await?;
