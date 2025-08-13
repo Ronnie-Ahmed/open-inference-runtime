@@ -23,6 +23,7 @@ sha2 = "0.10"         # SHA-256, SHA-512, etc.
 tract-onnx = "0.20"
 futures = { version = "0.3.28" }
 tokio-stream = "0.1.17"
+zstd = "0.13"
 # Web socket Server Dependencies
 warp = "0.3"
 tokio-tungstenite = "0.20"

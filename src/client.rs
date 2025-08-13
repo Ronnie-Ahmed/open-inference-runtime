@@ -79,6 +79,7 @@ impl TritonClient {
 
     println!("✅ Detected model: {}", model_name);
 
+
     Ok(Self {
         client,
         url: triton_url.to_string(),
@@ -526,16 +527,19 @@ impl TritonClient {
 
 fn get_help_message() -> &'static str {
     r#"Available commands:
-    infer <model_name>       - Run inference. Requires 'inputs' field in JSON format.
-    metadata <model_name>    - Get model metadata.
-    load <model_name>        - Load the model into memory.
-    unload <model_name>      - Unload the model from memory.
-    stats <model_name>       - Get statistics for a loaded model.
+    infer                    - Run inference. Requires 'inputs' field in JSON format. 
+    metadata                 - Get model metadata.
+    load                     - Load the model into memory.
+    unload                   - Unload the model from memory.
+    stats                    - Get statistics for a loaded model.
     list                     - List all available models in the repository.
     ping                     - Check basic connection (returns pong).
     live                     - Check if the Triton server is live.
     ready                    - Check if the Triton server is ready.
 
     Usage note:
-    Use plain text like: 'load my_model' or use JSON for 'infer' with inputs."#
+    Use plain text like: 'load my_model' or use JSON for 'infer' with inputs.
+    Example : {"command":"infer","inputs":{"INPUT0":[0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8],"INPUT1":[1,2,3,4]}}
+    Example(Without user input) : infer 
+    "#
 }
