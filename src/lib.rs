@@ -1,7 +1,6 @@
 pub mod client;
 pub mod models;
-pub mod websocket_server;
-
+pub mod tokenizer;
 pub use client::TritonClient;
 pub use models::ModelExtractor;
 

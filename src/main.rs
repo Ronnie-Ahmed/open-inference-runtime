@@ -2,7 +2,7 @@
 // use std::error::Error;
 use tokio;
 mod client;
-mod websocket_server;
+mod tokenizer;
 use client::*;
 // pub use websocket_server::start_ws_server;
 mod models;
@@ -23,7 +23,7 @@ use warp::Filter;
 #[tokio::main]
 async fn main() {
     // Configurations
-     let triton_url = "http://localhost:8000/v2";
+    let triton_url = "http://localhost:8000/v2";
     // let model_name = "densenet_onnx";
     let model_path = PathBuf::from("/home/ronnie/open-inference-runtime/extract");
 
@@ -58,11 +58,12 @@ async fn main() {
     // Start WebSocket server with TritonClient
     let client_filter = warp::any().map(move || client.clone());
 
-    let routes = warp::path("inference").and(warp::ws()).and(client_filter).map(
-        |ws: warp::ws::Ws, client: TritonClient| {
+    let routes = warp::path("inference")
+        .and(warp::ws())
+        .and(client_filter)
+        .map(|ws: warp::ws::Ws, client: TritonClient| {
             ws.on_upgrade(move |socket| handle_socket(socket, client))
-        },
-    );
+        });
 
     println!("🚀 WebSocket server running on ws://127.0.0.1:3000/inference");
     println!("Try  `wscat -c ws://127.0.0.1:3000/inference` ");

@@ -54,7 +54,9 @@ impl ModelExtractor {
     }
 
     pub fn extract_model(&self) -> io::Result<()> {
-        let file_name = self.archive_path.file_name()
+        let file_name = self
+            .archive_path
+            .file_name()
             .and_then(|f| f.to_str())
             .unwrap_or("");
 
